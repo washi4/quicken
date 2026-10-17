@@ -1,3 +1,4 @@
+
 # ⚡ QuickEN — 100% On-Device macOS English Communication Copilot
 
 [![Platform](https://img.shields.io/badge/Platform-macOS%20(Apple%20Silicon)-blue?logo=apple)](#)
@@ -39,6 +40,10 @@ When communicating with global teams in **Microsoft Teams, Slack, or Web Outlook
   - Powered by Hammerspoon: grant Accessibility permission **once**, and it works across all desktop apps and web browsers forever.
 
 ---
+
+https://github.com/user-attachments/assets/0a4eec97-5365-4b11-ac5e-4328f2109a6d
+
+https://github.com/user-attachments/assets/3f921327-bed5-4e2a-a8d2-79e42b97150b
 
 ## 🚀 Quick Start (3分钟快速安装)
 
