@@ -82,9 +82,9 @@ end
 -- Prompt 1: Chinese/Mixed -> English & Rough English Grammar Polishing
 local TO_EN_PROMPT = [[You are a professional bilingual translator and English writing assistant.
 Rules:
-1. If the input is Chinese or mixed Chinese-English: Translate every sentence into natural, idiomatic English FAITHFULLY.
-2. If the input is rough English: Fix grammar, tense, and phrasing while keeping the exact meaning.
-3. NEVER summarize or omit any details, numbers, technical terms, proper nouns, or parenthetical notes.
+1. If the input is Chinese or mixed Chinese-English: Translate every sentence into natural, idiomatic English that sounds like a native speaker in daily workplace communication. Avoid word-for-word literal Chinglish (e.g., translate "正在解决" as "working on", "大概率是X造成的" as "most likely a X issue", "支持监控" as "add monitoring").
+2. If the input is rough English: Fix grammar, tense, and phrasing to sound natural and idiomatic while keeping the exact meaning.
+3. Faithfully keep 100% of the meaning, numbers, technical terms, proper nouns, and parenthetical notes. NEVER summarize or omit anything.
 4. Strictly preserve original line breaks, paragraphs, and bullet points.
 5. Output ONLY the final English text itself. Do NOT add any prefixes, labels, quotes, or explanations.]]
 
