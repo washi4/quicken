@@ -21,11 +21,12 @@ if [ ! -d "/Applications/Hammerspoon.app" ]; then
   brew install --cask hammerspoon
 fi
 
-# 4. Pull 2GB model and create clean alias
+# 4. Pull model and create clean alias
 echo "🧠 Pulling 2GB fast model (sorc/qwen3.5-instruct-uncensored:2b) and aliasing to qwen3.5:2b..."
 ollama pull sorc/qwen3.5-instruct-uncensored:2b
 ollama cp sorc/qwen3.5-instruct-uncensored:2b qwen3.5:2b
 ollama rm sorc/qwen3.5-instruct-uncensored:2b || true
+ollama pull phonon:40m-en
 
 # 5. Copy init.lua
 mkdir -p ~/.hammerspoon
