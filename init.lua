@@ -1,19 +1,24 @@
+# 允许 2GB 翻译模型与 120MB 语音模型共存，避免互相挤出内存
+
 -- ============================================================================
--- QuickEN: 100% On-Device macOS English Communication Copilot
--- Powered by Ollama & Hammerspoon
+-- QuickEN: 100% On-Device macOS English Communication Copilot (with Phonon TTS)
+-- Powered by Ollama (qwen3.5:2b + phonon) & Hammerspoon
 --
 -- Hotkeys:
 --   [Ctrl + Option + E] : In-Place Translation (Select text -> Instant English)
---   [Ctrl + Option + W] : Smart Floating Window (Translate, Polish & Surgical Refine)
+--   [Ctrl + Option + W] : Smart Floating Window (Translate, Polish, Refine & Speak)
 -- ============================================================================
 
 local OLLAMA_HOST = "http://127.0.0.1:11434"
 local DEFAULT_MODEL = "qwen3.5:2b"
+local DEFAULT_TTS_MODEL = "phonon:40m-en"
 local KEEP_ALIVE_TIME = "3m"
 local FRAME_SETTINGS_KEY = "quick_en_copilot_frame_v2"
 
 local activeModel = DEFAULT_MODEL
+local activeTtsModel = DEFAULT_TTS_MODEL
 local availableModels = { DEFAULT_MODEL }
+local speechTask = nil
 
 -- Silently wake up local Ollama service if not running
 local function startOllamaProcess()
@@ -23,7 +28,16 @@ local function startOllamaProcess()
     end)
 end
 
--- Detect installed Ollama models
+-- Stop any active TTS audio playback
+local function stopSpeech()
+    if speechTask and speechTask:isRunning() then
+        speechTask:terminate()
+    end
+    speechTask = nil
+    hs.execute("killall afplay 2>/dev/null")
+end
+
+-- Detect installed Ollama models (separating text LLMs from Phonon TTS models)
 local function detectModels(autoWake, callback)
     hs.http.asyncGet(OLLAMA_HOST .. "/api/tags", nil, function(status, body)
         if status == 200 and body then
@@ -32,10 +46,16 @@ local function detectModels(autoWake, callback)
                 availableModels = {}
                 local foundActive = false
                 for _, m in ipairs(tags.models) do
-                    table.insert(availableModels, m.name)
-                    if m.name == activeModel then foundActive = true end
+                    if m.name:lower():find("phonon") then
+                        activeTtsModel = m.name
+                    else
+                        table.insert(availableModels, m.name)
+                        if m.name == activeModel then foundActive = true end
+                    end
                 end
-                if not foundActive then
+                if #availableModels == 0 then
+                    availableModels = { DEFAULT_MODEL }
+                elseif not foundActive then
                     for _, name in ipairs(availableModels) do
                         if name:find("qwen") or name:find("gemma") then
                             activeModel = name; foundActive = true; break
@@ -66,20 +86,20 @@ local function requestOllamaChat(payloadTable, onSuccess, onProgress, onError, r
         if code <= 0 and retryCount < 12 then
             if retryCount == 0 then startOllamaProcess() end
             if onProgress then
-                onProgress(string.format("🔄 Waking up local Ollama service (%d/12)...", retryCount + 1))
+                onProgress(string.format("🔄 正在后台唤醒 Ollama 服务 (%d/12)...", retryCount + 1))
             end
             hs.timer.doAfter(0.6, function()
                 requestOllamaChat(payloadTable, onSuccess, onProgress, onError, retryCount + 1)
             end)
         else
             if onError then
-                onError("Ollama connection error (HTTP " .. tostring(code) .. ")")
+                onError("Ollama 响应异常 (HTTP " .. tostring(code) .. ")")
             end
         end
     end)
 end
 
--- Prompt 1: Chinese/Mixed -> English & Rough English Grammar Polishing
+-- Prompt 1: Chinese/Mixed -> Idiomatic English & Rough English Grammar Polishing
 local TO_EN_PROMPT = [[You are a professional bilingual translator and English writing assistant.
 Rules:
 1. If the input is Chinese or mixed Chinese-English: Translate every sentence into natural, idiomatic English that sounds like a native speaker in daily workplace communication. Avoid word-for-word literal Chinglish (e.g., translate "正在解决" as "working on", "大概率是X造成的" as "most likely a X issue", "支持监控" as "add monitoring").
@@ -93,8 +113,8 @@ local REFINE_EN_PROMPT = [[You are a surgical English editor and translator.
 The user took an existing English text and edited parts of it by typing Chinese words/phrases (or rough English) directly inside the text.
 Rules:
 1. Keep all existing good English sentences and words UNCHANGED as much as possible.
-2. Translate ONLY the newly added Chinese parts into natural, idiomatic English that blends seamlessly into the surrounding sentence structure and tense.
-3. NEVER summarize or omit any details, numbers, proper nouns, or paragraphs.
+2. Translate ONLY the newly added Chinese parts into natural, idiomatic English (avoiding word-for-word Chinglish) that blends seamlessly into the surrounding sentence structure and tense.
+3. Faithfully keep 100% of the meaning, numbers, proper nouns, and paragraphs. NEVER summarize or omit anything.
 4. Strictly preserve original line breaks and paragraphs.
 5. Output ONLY the final complete English text. No prefixes, no quotes, no explanations.]]
 
@@ -119,12 +139,12 @@ hs.hotkey.bind({"ctrl", "alt"}, "E", function()
         local text = hs.pasteboard.getContents()
         if not text or text:match("^%s*$") then
             if oldClip then hs.pasteboard.setContents(oldClip) end
-            hs.alert.show("⚠️ Please select text first", 1)
+            hs.alert.show("⚠️ 请先选中要翻译的文本", 1)
             return
         end
 
         hs.alert.closeAll()
-        local loadingAlert = hs.alert.show("⚡ Translating...", 15)
+        local loadingAlert = hs.alert.show("⚡ 翻译中...", 15)
 
         local payloadTable = {
             model = activeModel,
@@ -159,7 +179,7 @@ hs.hotkey.bind({"ctrl", "alt"}, "E", function()
 end)
 
 -- ============================================================================
--- Mode B: [Ctrl + Option + W] Smart Floating Window (900x520)
+-- Mode B: [Ctrl + Option + W] Smart Floating Window (920x520) with Phonon TTS
 -- ============================================================================
 local copilotPanel = nil
 
@@ -204,11 +224,11 @@ local HTML_UI = [[
   textarea.input-box:focus { border-color: #89b4fa; box-shadow: 0 0 0 2px rgba(137,180,250,0.2); }
   .action-bar {
     display: flex; justify-content: space-between; align-items: center;
-    margin-top: 10px; margin-bottom: 10px; flex-shrink: 0; gap: 12px;
+    margin-top: 10px; margin-bottom: 10px; flex-shrink: 0; gap: 10px;
   }
-  .btn-group { display: flex; gap: 8px; align-items: center; }
+  .btn-group { display: flex; gap: 7px; align-items: center; flex-wrap: wrap; }
   button.act-btn {
-    border: none; border-radius: 6px; padding: 6px 13px;
+    border: none; border-radius: 6px; padding: 6px 12px;
     font-size: 12.5px; font-weight: 600; cursor: pointer; transition: all 0.15s;
     display: inline-flex; align-items: center; gap: 4px; white-space: nowrap;
   }
@@ -218,9 +238,12 @@ local HTML_UI = [[
   .btn-to-cn:hover { background: #45475a; color: #ffffff; }
   .btn-refine { background: #313244; color: #f9e2af; border: 1px solid #45475a; }
   .btn-refine:hover { background: #45475a; color: #ffffff; }
+  .btn-speak { background: #313244; color: #cba6f7; border: 1px solid #45475a; }
+  .btn-speak:hover { background: #45475a; color: #ffffff; }
+  .btn-speak.speaking { background: #f38ba8; color: #11111b; border-color: #f38ba8; }
   .btn-copy { background: #313244; color: #a6e3a1; border: 1px solid #45475a; }
   .btn-copy:hover { background: #45475a; color: #ffffff; }
-  .btn-clear { background: transparent; color: #9399b2; border: 1px solid #313244; font-weight: 400; }
+  .btn-clear { background: transparent; color: #9399b2; border: 1px solid #313244; font-weight: 400; padding: 6px 10px; }
   .btn-clear:hover { color: #cdd6f4; border-color: #45475a; }
   textarea.output-box {
     width: 100%; flex: 1.25; min-height: 115px;
@@ -237,11 +260,11 @@ local HTML_UI = [[
     <div class="title-wrap">
       <span>⚡ <b>EN</b></span>
       <select id="model-select" class="model-select" onchange="changeModel(this.value)">
-        <option>Detecting models...</option>
+        <option>检测模型中...</option>
       </select>
-      <button class="btn-top" onclick="unloadMemory()" title="Immediately unload model from RAM">🧹 Free RAM</button>
+      <button class="btn-top" onclick="unloadMemory()" title="立即将模型从 Mac 内存中卸载">🧹 释放内存</button>
     </div>
-    <span id="status">Ready (Auto-free RAM after 3m idle)</span>
+    <span id="status">就绪 (闲置3分钟自动释放内存)</span>
   </div>
 
   <textarea id="cn-input" class="input-box" placeholder="输入中文、中英混杂(不会的词打中文) 或 英文草稿... (按 Enter 译为英文)"></textarea>
@@ -251,6 +274,7 @@ local HTML_UI = [[
       <button class="act-btn btn-translate" onclick="triggerTranslate('en')">⚡ 译为英文 (Enter)</button>
       <button class="act-btn btn-to-cn" onclick="triggerTranslate('cn')">📖 译为中文 (⌘J)</button>
       <button class="act-btn btn-refine" onclick="triggerRefineOutput()" title="在下方英文结果中直接输入中文修改，点此或在下框按 Enter 即可局部转成英文">✨ 下框微调转英 (下框Enter)</button>
+      <button id="speak-btn" class="act-btn btn-speak" onclick="toggleSpeak()" title="使用本地 Phonon 模型朗读英文 (⌘L)">🔊 朗读 (⌘L)</button>
       <button id="copy-btn" class="act-btn btn-copy" onclick="copyResult()">📋 复制 (⌘⇧C)</button>
       <button class="act-btn btn-clear" onclick="clearAll()">清空</button>
     </div>
@@ -265,10 +289,12 @@ local HTML_UI = [[
   const statusEl = document.getElementById('status');
   const modelSelect = document.getElementById('model-select');
   const copyBtn = document.getElementById('copy-btn');
+  const speakBtn = document.getElementById('speak-btn');
 
   let isComposingInput = false;
   let isComposingOut = false;
   let isTranslating = false;
+  let isSpeaking = false;
 
   function postAction(action, data) {
     window.webkit.messageHandlers.copilot.postMessage({ action, data });
@@ -308,6 +334,38 @@ local HTML_UI = [[
     postAction("translate", { text: text, mode: "refine" });
   }
 
+  function toggleSpeak() {
+    if (isSpeaking) {
+      postAction("stopSpeak", "");
+      return;
+    }
+    let textToSpeak = enOut.value.trim();
+    if (!textToSpeak || textToSpeak === "正在推理...") {
+      textToSpeak = input.value.trim();
+    }
+    if (!textToSpeak) return;
+
+    isSpeaking = true;
+    speakBtn.innerText = "⏹️ 停止 (⌘L)";
+    speakBtn.classList.add("speaking");
+    statusEl.innerText = "🔊 正在通过本地 Phonon 朗读英文...";
+    statusEl.style.color = "#cba6f7";
+    postAction("speak", textToSpeak);
+  }
+
+  window.onSpeakDone = function(errMsg) {
+    isSpeaking = false;
+    speakBtn.innerText = "🔊 朗读 (⌘L)";
+    speakBtn.classList.remove("speaking");
+    if (errMsg) {
+      statusEl.innerText = "❌ 朗读失败: " + errMsg;
+      statusEl.style.color = "#f38ba8";
+    } else {
+      statusEl.innerText = "🟢 朗读完毕";
+      statusEl.style.color = "#a6adc8";
+    }
+  };
+
   enOut.addEventListener('input', () => {
     statusEl.innerText = "✏️ 若输入了中文微调，直接按 Enter 即可局部转为英文；或点「📋 复制」";
     statusEl.style.color = "#f9e2af";
@@ -326,6 +384,7 @@ local HTML_UI = [[
   }
 
   function clearAll() {
+    if (isSpeaking) postAction("stopSpeak", "");
     input.value = "";
     enOut.value = "";
     enOut.style.color = "#a6e3a1";
@@ -335,6 +394,7 @@ local HTML_UI = [[
   }
 
   function unloadMemory() {
+    if (isSpeaking) postAction("stopSpeak", "");
     statusEl.innerText = "🧹 正在从内存卸载模型...";
     statusEl.style.color = "#f9e2af";
     postAction("unload", "");
@@ -368,6 +428,9 @@ local HTML_UI = [[
     } else if (e.metaKey && (e.key === 'j' || e.key === 'J')) {
       e.preventDefault();
       triggerTranslate('cn');
+    } else if (e.metaKey && (e.key === 'l' || e.key === 'L')) {
+      e.preventDefault();
+      toggleSpeak();
     } else if (e.metaKey && e.shiftKey && (e.key === 'c' || e.key === 'C')) {
       e.preventDefault();
       copyResult();
@@ -389,7 +452,7 @@ local HTML_UI = [[
     if (!online) {
       statusEl.innerText = "🟡 正在后台自动唤醒 Ollama 服务...";
       statusEl.style.color = "#f9e2af";
-    } else if (!isTranslating) {
+    } else if (!isTranslating && !isSpeaking) {
       statusEl.innerText = "🟢 Ollama 已就绪 (闲置3分钟自动释放内存)";
       statusEl.style.color = "#a6adc8";
     }
@@ -410,15 +473,15 @@ local HTML_UI = [[
     enOut.style.color = (mode === "cn") ? "#89dceb" : "#a6e3a1";
     enOut.value = text;
     if (mode === "refine") {
-      statusEl.innerText = "✨ 下框微调已完成并自动复制 (" + elapsedSec + "s)！可继续输入中文按 Enter 微调";
+      statusEl.innerText = "✨ 下框微调已完成并自动复制 (" + elapsedSec + "s)！按 ⌘L 可朗读发音";
     } else {
-      statusEl.innerText = "✅ 已生成并自动复制 (" + elapsedSec + "s) · 可在下框直接打中文按 Enter 微调";
+      statusEl.innerText = "✅ 已生成并自动复制 (" + elapsedSec + "s) · 可下框打中文微调 或按 ⌘L 朗读";
     }
     statusEl.style.color = "#a6e3a1";
   };
 
   window.updateUnloadDone = function(modelName) {
-    statusEl.innerText = "🧹 已将 " + modelName + " 从内存彻底释放！下次翻译自动加载";
+    statusEl.innerText = "🧹 已将模型从内存彻底释放！下次使用自动加载";
     statusEl.style.color = "#89dceb";
   };
 
@@ -462,7 +525,7 @@ local function createCopilotPanel()
     if saved and saved.w and saved.h and saved.w >= 860 then
         rect = hs.geometry.rect(saved.x, saved.y, saved.w, saved.h)
     else
-        local w, h = 900, 520
+        local w, h = 920, 520
         rect = hs.geometry.rect(
             screenFrame.x + (screenFrame.w - w) / 2,
             screenFrame.y + (screenFrame.h - h) * 0.22,
@@ -482,13 +545,50 @@ local function createCopilotPanel()
             activeModel = body.data
 
         elseif body.action == "close" then
+            stopSpeech()
+            if copilotPanel then
+                copilotPanel:evaluateJavaScript("window.onSpeakDone()")
+            end
             savePanelFrame()
             copilotPanel:hide()
 
         elseif body.action == "copy" then
             hs.pasteboard.setContents(body.data)
 
+        elseif body.action == "stopSpeak" then
+            stopSpeech()
+            if copilotPanel then
+                copilotPanel:evaluateJavaScript("window.onSpeakDone()")
+            end
+
+        elseif body.action == "speak" then
+            stopSpeech()
+            local speakText = tostring(body.data or "")
+            local reqJson = hs.json.encode({
+                model = activeTtsModel,
+                input = speakText,
+                voice = "Easton",
+                response_format = "wav"
+            })
+            speechTask = hs.task.new("/bin/zsh", function(exitCode, stdOut, stdErr)
+                speechTask = nil
+                if copilotPanel then
+                    if exitCode == 0 then
+                        copilotPanel:evaluateJavaScript("window.onSpeakDone()")
+                    else
+                        copilotPanel:evaluateJavaScript(string.format("window.onSpeakDone(%q)", "请确认 Ollama 已升级至 v0.40.11+ 且已拉取 phonon"))
+                    end
+                end
+            end, {
+                "-c",
+                'curl -s -f "' .. OLLAMA_HOST .. '/v1/audio/speech" -H "Content-Type: application/json" -d "$1" -o /tmp/quicken_tts.wav && afplay /tmp/quicken_tts.wav',
+                "--",
+                reqJson
+            })
+            speechTask:start()
+
         elseif body.action == "unload" then
+            stopSpeech()
             local unloadPayload = hs.json.encode({
                 model = activeModel,
                 messages = {},
@@ -551,7 +651,10 @@ local function createCopilotPanel()
     copilotPanel:level(hs.drawing.windowLevels.floating)
     copilotPanel:allowTextEntry(true)
     copilotPanel:windowCallback(function(act)
-        if act == "closing" or act == "frameChange" then
+        if act == "closing" then
+            stopSpeech()
+            savePanelFrame()
+        elseif act == "frameChange" then
             savePanelFrame()
         end
     end)
@@ -561,6 +664,7 @@ end
 hs.hotkey.bind({"ctrl", "alt"}, "W", function()
     if not copilotPanel then createCopilotPanel() end
     if copilotPanel:isVisible() then
+        stopSpeech()
         savePanelFrame()
         copilotPanel:hide()
     else
@@ -570,4 +674,4 @@ hs.hotkey.bind({"ctrl", "alt"}, "W", function()
     end
 end)
 
-hs.alert.show("🟢 QuickEN Ready: Ctrl+Opt+E (In-Place) | Ctrl+Opt+W (Window)", 1.8)
+hs.alert.show("🟢 QuickEN (含 Phonon 语音朗读) 已就绪!", 1.8)
